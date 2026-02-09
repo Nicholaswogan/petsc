@@ -99,7 +99,6 @@ GPATH
 GRTAGS
 GSYMS
 GTAGS
-CMakeLists.txt
 petsc-doc-env
 doc/manualpages
 src/binding/petsc4py/.eggs
