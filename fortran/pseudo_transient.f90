@@ -106,11 +106,17 @@ module pseudo_transient
     real(wp) :: dt_increment = 1.1_wp  !! Growth factor used by default timestep adaptation.
     real(wp) :: dt_max = 0.0_wp  !! Maximum pseudo-time step (`<=0` disables cap).
     logical :: increment_dt_from_initial_dt = .false.  !! If true, adapt from initial `(dt, fnorm)` pair.
+    logical :: enforce_positivity = .false.  !! If true, enforce nonnegative-state constraints during updates.
+    real(wp), allocatable :: positivity_abs_floor(:)  !! Per-component absolute floor used in zero-equivalent negativity threshold.
+    real(wp) :: positivity_rel_floor = 1.0e-12_wp  !! Relative floor scaling for zero-equivalent negativity threshold.
+    real(wp) :: positivity_alpha_min = 1.0e-12_wp  !! Minimum damping factor allowed in positivity line search.
+    logical :: clip_tiny_negative_to_zero = .true.  !! If true, clip tiny negative values within threshold to zero.
 
     real(wp) :: fatol = 1.0e-50_wp  !! Absolute convergence tolerance on residual metric.
     real(wp) :: frtol = 1.0e-12_wp  !! Relative convergence tolerance on residual metric.
     logical :: use_weighted_norm = .false.  !! If true, use WRMS norm as the residual metric.
     real(wp) :: weighted_rtol = 0.0_wp  !! Relative tolerance used in WRMS weights.
+    real(wp), allocatable :: weighted_atol(:)  !! Per-component absolute tolerances used in WRMS weighting.
 
     real(wp) :: fnorm = -1.0_wp  !! Current residual metric (2-norm or WRMS norm).
     real(wp) :: fnorm_initial = -1.0_wp  !! Residual metric at first accepted step.
@@ -138,7 +144,6 @@ module pseudo_transient
     ! Banded Jacobian compact storage (LAPACK standard):
     ! jac_mat(ku+1+i-j, j) = J(i,j), for max(1,j-ku) <= i <= min(n,j+kl)
     real(wp), allocatable :: a_band(:, :)  !! Banded system matrix workspace for LAPACK `dgbsv`.
-    real(wp), allocatable :: weighted_atol(:)  !! Per-component absolute tolerances used in WRMS weighting.
 
     integer, allocatable :: ipiv(:)  !! Pivot indices returned by LAPACK factorizations.
   contains
@@ -157,7 +162,7 @@ contains
   !!
   !! Configures dense or banded Jacobian storage, sets PETSc-like defaults,
   !! and optionally applies user-provided tolerances and stepping controls.
-  subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps, weighted_rtol, weighted_atol)
+  subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps, weighted_rtol, weighted_atol, enforce_positivity, positivity_abs_floor, positivity_rel_floor, positivity_alpha_min, clip_tiny_negative_to_zero)
     class(PTCSolver), intent(inout) :: self  !! Solver object to initialize.
     real(wp), intent(in) :: x0(:)  !! Initial state guess.
     procedure(rhs_fcn) :: f  !! User residual callback.
@@ -175,6 +180,11 @@ contains
     logical, intent(in), optional :: increment_dt_from_initial_dt  !! Optional switch for initial-reference dt adaptation.
     real(wp), intent(in), optional :: weighted_rtol  !! Relative tolerance in WRMS weighting (`rtol` term).
     real(wp), intent(in), optional :: weighted_atol(:)  !! Per-component absolute tolerances in WRMS weighting.
+    logical, intent(in), optional :: enforce_positivity  !! Optional switch to enforce nonnegative-state constraints.
+    real(wp), intent(in), optional :: positivity_abs_floor(:)  !! Optional per-component absolute floor for zero-equivalent negativity threshold.
+    real(wp), intent(in), optional :: positivity_rel_floor  !! Optional relative floor for zero-equivalent negativity threshold.
+    real(wp), intent(in), optional :: positivity_alpha_min  !! Optional minimum damping factor in positivity line search.
+    logical, intent(in), optional :: clip_tiny_negative_to_zero  !! Optional switch to clip tiny negatives to zero after accepted steps.
 
     call reset_storage(self)
 
@@ -192,6 +202,11 @@ contains
 
     self%f => f
 
+    self%enforce_positivity = .false.
+    self%positivity_rel_floor = 1.0e-12_wp
+    self%positivity_alpha_min = 1.0e-12_wp
+    self%clip_tiny_negative_to_zero = .true.
+
     if (present(dt_increment)) self%dt_increment = dt_increment
     if (present(dt_max)) self%dt_max = dt_max
     if (present(fatol)) self%fatol = fatol
@@ -199,6 +214,24 @@ contains
     if (present(increment_dt_from_initial_dt)) self%increment_dt_from_initial_dt = increment_dt_from_initial_dt
     if (present(max_reject)) self%max_reject = max_reject
     if (present(max_steps)) self%max_steps = max_steps
+    if (present(enforce_positivity)) self%enforce_positivity = enforce_positivity
+    if (allocated(self%positivity_abs_floor)) deallocate(self%positivity_abs_floor)
+    allocate(self%positivity_abs_floor(self%neq))
+    self%positivity_abs_floor = 1.0e-14_wp
+    if (present(clip_tiny_negative_to_zero)) self%clip_tiny_negative_to_zero = clip_tiny_negative_to_zero
+    if (present(positivity_abs_floor)) then
+      if (size(positivity_abs_floor) /= self%neq) then
+        self%reason = PTC_DIVERGED_INVALID_INPUT
+        return
+      end if
+      self%positivity_abs_floor = positivity_abs_floor
+    end if
+    if (present(positivity_rel_floor)) self%positivity_rel_floor = positivity_rel_floor
+    if (present(positivity_alpha_min)) self%positivity_alpha_min = positivity_alpha_min
+    if (any(self%positivity_abs_floor < 0.0_wp) .or. self%positivity_rel_floor < 0.0_wp .or. self%positivity_alpha_min <= 0.0_wp) then
+      self%reason = PTC_DIVERGED_INVALID_INPUT
+      return
+    end if
     if (present(weighted_rtol) .or. present(weighted_atol)) then
       if (.not. present(weighted_rtol) .or. .not. present(weighted_atol)) then
         self%reason = PTC_DIVERGED_INVALID_INPUT
@@ -326,6 +359,10 @@ contains
         call PTCSolver_reject_step(self, rejections, max(reject_dt, tiny(1.0_wp)))
         if (self%reason /= PTC_REASON_NONE) return
         cycle
+      end if
+
+      if (self%enforce_positivity .and. self%clip_tiny_negative_to_zero) then
+        call PTCSolver_clip_tiny_negative(self, self%x, self%x_old)
       end if
 
       call PTCSolver_compute_residual(self, self%x, self%fvec, self%fnorm, ierr)
@@ -489,7 +526,8 @@ contains
       end if
 
       self%step_vec = self%rhs_mat(:, 1)
-      self%x = self%x + self%step_vec
+      call PTCSolver_apply_update(self, ierr)
+      if (ierr /= 0) return
 
     case (PTC_JAC_BAND)
       call self%jac(self%x, self%jac_mat, ierr)
@@ -513,12 +551,69 @@ contains
       end if
 
       self%step_vec = self%rhs_mat(:, 1)
-      self%x = self%x + self%step_vec
+      call PTCSolver_apply_update(self, ierr)
+      if (ierr /= 0) return
 
     case default
       ierr = -1
     end select
   end subroutine PTCSolver_take_newton_update
+
+  !> Apply correction update, optionally using positivity-preserving damping.
+  subroutine PTCSolver_apply_update(self, ierr)
+    class(PTCSolver), intent(inout) :: self  !! Solver object updated in place.
+    integer, intent(out) :: ierr  !! Status (`0` success, positive rejectable failure).
+
+    real(wp) :: alpha
+    real(wp) :: x_trial(self%neq)
+
+    ierr = 0
+    if (.not. self%enforce_positivity) then
+      self%x = self%x + self%step_vec
+      return
+    end if
+
+    alpha = 1.0_wp
+    do
+      x_trial = self%x + alpha * self%step_vec
+      if (PTCSolver_state_is_admissible(self, x_trial, self%x)) then
+        self%x = x_trial
+        return
+      end if
+      alpha = 0.5_wp * alpha
+      if (alpha < self%positivity_alpha_min) then
+        ierr = 1
+        return
+      end if
+    end do
+  end subroutine PTCSolver_apply_update
+
+  !> Check whether a candidate state satisfies positivity thresholds.
+  logical function PTCSolver_state_is_admissible(self, x_trial, x_ref) result(is_ok)
+    class(PTCSolver), intent(in) :: self  !! Solver object providing positivity thresholds.
+    real(wp), intent(in) :: x_trial(:)  !! Candidate updated state.
+    real(wp), intent(in) :: x_ref(:)  !! Reference state used to scale positivity thresholds.
+
+    real(wp) :: eps_vec(size(x_trial))
+
+    eps_vec = self%positivity_abs_floor + self%positivity_rel_floor * max(1.0_wp, abs(x_ref))
+    is_ok = all(x_trial >= -eps_vec)
+  end function PTCSolver_state_is_admissible
+
+  !> Clip tiny negative values within threshold to zero.
+  subroutine PTCSolver_clip_tiny_negative(self, x_state, x_ref)
+    class(PTCSolver), intent(in) :: self  !! Solver object providing positivity thresholds.
+    real(wp), intent(inout) :: x_state(:)  !! State vector potentially containing tiny negatives.
+    real(wp), intent(in) :: x_ref(:)  !! Reference state used to scale positivity thresholds.
+
+    integer :: i
+    real(wp) :: eps_i
+
+    do i = 1, size(x_state)
+      eps_i = self%positivity_abs_floor(i) + self%positivity_rel_floor * max(1.0_wp, abs(x_ref(i)))
+      if (x_state(i) < 0.0_wp .and. x_state(i) >= -eps_i) x_state(i) = 0.0_wp
+    end do
+  end subroutine PTCSolver_clip_tiny_negative
 
   !> Compute the next pseudo-time step from residual norms.
   !!
@@ -579,12 +674,17 @@ contains
     if (allocated(self%jac_mat)) deallocate(self%jac_mat)
     if (allocated(self%a_dense)) deallocate(self%a_dense)
     if (allocated(self%a_band)) deallocate(self%a_band)
+    if (allocated(self%positivity_abs_floor)) deallocate(self%positivity_abs_floor)
     if (allocated(self%weighted_atol)) deallocate(self%weighted_atol)
     if (allocated(self%ipiv)) deallocate(self%ipiv)
 
     self%initialized = .false.
     self%use_weighted_norm = .false.
     self%weighted_rtol = 0.0_wp
+    self%enforce_positivity = .false.
+    self%positivity_rel_floor = 1.0e-12_wp
+    self%positivity_alpha_min = 1.0e-12_wp
+    self%clip_tiny_negative_to_zero = .true.
     self%f => null()
     self%jac => null()
     self%verify => null()

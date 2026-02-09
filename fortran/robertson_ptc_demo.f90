@@ -48,7 +48,7 @@ contains
 
     call solver%initialize(y0, robertson_rhs, jacobian_type, dt0, robertson_jac, &
       kl=1, ku=2, max_steps=200000, dt_max=1.0e20_wp, frtol=0.0_wp, &
-      weighted_rtol=wrms_rtol, weighted_atol=wrms_atol)
+      weighted_rtol=wrms_rtol, weighted_atol=wrms_atol, enforce_positivity=.true.)
 
     write (*, '(a,a)') 'Stepping case: ', trim(label)
     write (*, '(a)') '  step                  dt             l2_norm           wrms_norm      rel_metric'
