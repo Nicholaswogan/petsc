@@ -405,7 +405,7 @@ contains
       end if
 
       self%step_vec = self%rhs_mat(:, 1)
-      self%x = self%x - self%step_vec
+      self%x = self%x + self%step_vec
 
     case (PTC_JAC_BAND)
       call self%jac(self%x, self%jac_mat, ierr)
@@ -429,7 +429,7 @@ contains
       end if
 
       self%step_vec = self%rhs_mat(:, 1)
-      self%x = self%x - self%step_vec
+      self%x = self%x + self%step_vec
 
     case default
       ierr = -1
