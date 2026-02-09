@@ -107,12 +107,16 @@ module pseudo_transient
     real(wp) :: dt_max = 0.0_wp  !! Maximum pseudo-time step (`<=0` disables cap).
     logical :: increment_dt_from_initial_dt = .false.  !! If true, adapt from initial `(dt, fnorm)` pair.
 
-    real(wp) :: fatol = 1.0e-50_wp  !! Absolute convergence tolerance on `||f(x)||_2`.
-    real(wp) :: frtol = 1.0e-12_wp  !! Relative convergence tolerance on `||f(x)||_2 / ||f(x0)||_2`.
+    real(wp) :: fatol = 1.0e-50_wp  !! Absolute convergence tolerance on residual metric.
+    real(wp) :: frtol = 1.0e-12_wp  !! Relative convergence tolerance on residual metric.
+    logical :: use_weighted_norm = .false.  !! If true, use WRMS norm as the residual metric.
+    real(wp) :: weighted_rtol = 0.0_wp  !! Relative tolerance used in WRMS weights.
 
-    real(wp) :: fnorm = -1.0_wp  !! Current residual norm `||f(x)||_2`.
-    real(wp) :: fnorm_initial = -1.0_wp  !! Residual norm at first accepted step.
-    real(wp) :: fnorm_previous = -1.0_wp  !! Residual norm from previous accepted step.
+    real(wp) :: fnorm = -1.0_wp  !! Current residual metric (2-norm or WRMS norm).
+    real(wp) :: fnorm_initial = -1.0_wp  !! Residual metric at first accepted step.
+    real(wp) :: fnorm_previous = -1.0_wp  !! Residual metric from previous accepted step.
+    real(wp) :: fnorm_l2 = -1.0_wp  !! Current unweighted residual 2-norm `||f(x)||_2`.
+    real(wp) :: fnorm_wrms = -1.0_wp  !! Current weighted residual WRMS norm.
 
     integer :: steps = 0  !! Number of accepted pseudo-steps.
     integer :: rejects_total = 0  !! Total number of rejected step attempts.
@@ -134,6 +138,7 @@ module pseudo_transient
     ! Banded Jacobian compact storage (LAPACK standard):
     ! jac_mat(ku+1+i-j, j) = J(i,j), for max(1,j-ku) <= i <= min(n,j+kl)
     real(wp), allocatable :: a_band(:, :)  !! Banded system matrix workspace for LAPACK `dgbsv`.
+    real(wp), allocatable :: weighted_atol(:)  !! Per-component absolute tolerances used in WRMS weighting.
 
     integer, allocatable :: ipiv(:)  !! Pivot indices returned by LAPACK factorizations.
   contains
@@ -152,7 +157,7 @@ contains
   !!
   !! Configures dense or banded Jacobian storage, sets PETSc-like defaults,
   !! and optionally applies user-provided tolerances and stepping controls.
-  subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps)
+  subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps, weighted_rtol, weighted_atol)
     class(PTCSolver), intent(inout) :: self  !! Solver object to initialize.
     real(wp), intent(in) :: x0(:)  !! Initial state guess.
     procedure(rhs_fcn) :: f  !! User residual callback.
@@ -168,6 +173,8 @@ contains
     real(wp), intent(in), optional :: dt_increment  !! Default timestep growth factor.
     real(wp), intent(in), optional :: dt_max  !! Maximum allowed timestep (non-positive means no cap).
     logical, intent(in), optional :: increment_dt_from_initial_dt  !! Optional switch for initial-reference dt adaptation.
+    real(wp), intent(in), optional :: weighted_rtol  !! Relative tolerance in WRMS weighting (`rtol` term).
+    real(wp), intent(in), optional :: weighted_atol(:)  !! Per-component absolute tolerances in WRMS weighting.
 
     call reset_storage(self)
 
@@ -192,10 +199,30 @@ contains
     if (present(increment_dt_from_initial_dt)) self%increment_dt_from_initial_dt = increment_dt_from_initial_dt
     if (present(max_reject)) self%max_reject = max_reject
     if (present(max_steps)) self%max_steps = max_steps
+    if (present(weighted_rtol) .or. present(weighted_atol)) then
+      if (.not. present(weighted_rtol) .or. .not. present(weighted_atol)) then
+        self%reason = PTC_DIVERGED_INVALID_INPUT
+        return
+      end if
+      if (weighted_rtol <= 0.0_wp .or. size(weighted_atol) /= self%neq) then
+        self%reason = PTC_DIVERGED_INVALID_INPUT
+        return
+      end if
+      if (any(weighted_atol <= 0.0_wp)) then
+        self%reason = PTC_DIVERGED_INVALID_INPUT
+        return
+      end if
+      self%use_weighted_norm = .true.
+      self%weighted_rtol = weighted_rtol
+      allocate(self%weighted_atol(self%neq))
+      self%weighted_atol = weighted_atol
+    end if
 
     self%fnorm = -1.0_wp
     self%fnorm_initial = -1.0_wp
     self%fnorm_previous = -1.0_wp
+    self%fnorm_l2 = -1.0_wp
+    self%fnorm_wrms = -1.0_wp
 
     allocate(self%x(self%neq), self%x_old(self%neq), self%fvec(self%neq), self%step_vec(self%neq), self%rhs_mat(self%neq, 1), self%ipiv(self%neq))
     self%x = x0
@@ -363,9 +390,16 @@ contains
   subroutine PTCSolver_check_convergence(self)
     class(PTCSolver), intent(inout) :: self  !! Solver object whose residual norms are tested.
 
-    if (self%fnorm < self%fatol) then
-      self%reason = PTC_CONVERGED_PSEUDO_FATOL
-      return
+    if (self%use_weighted_norm) then
+      if (self%fnorm < 1.0_wp) then
+        self%reason = PTC_CONVERGED_PSEUDO_FATOL
+        return
+      end if
+    else
+      if (self%fnorm < self%fatol) then
+        self%reason = PTC_CONVERGED_PSEUDO_FATOL
+        return
+      end if
     end if
 
     if (self%fnorm_initial > 0.0_wp) then
@@ -378,12 +412,12 @@ contains
     self%reason = PTC_REASON_NONE
   end subroutine PTCSolver_check_convergence
 
-  !> Compute residual vector and its 2-norm at a given state.
+  !> Compute residual vector and its active metric norm at a given state.
   subroutine PTCSolver_compute_residual(self, x, fvec, fnorm, ierr)
     class(PTCSolver), intent(inout) :: self  !! Solver object providing residual callback.
     real(wp), intent(in) :: x(:)  !! State at which to evaluate residual.
     real(wp), intent(out) :: fvec(:)  !! Residual vector `f(x)`.
-    real(wp), intent(out) :: fnorm  !! Euclidean norm of residual vector.
+    real(wp), intent(out) :: fnorm  !! Residual metric norm used by timestep/adaptation logic.
     integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
 
     call self%f(x, fvec, ierr)
@@ -392,8 +426,28 @@ contains
       return
     end if
 
-    fnorm = norm2(fvec)
+    self%fnorm_l2 = norm2(fvec)
+    if (self%use_weighted_norm) then
+      self%fnorm_wrms = PTCSolver_compute_wrms_norm(self, x, fvec)
+      fnorm = self%fnorm_wrms
+    else
+      self%fnorm_wrms = -1.0_wp
+      fnorm = self%fnorm_l2
+    end if
   end subroutine PTCSolver_compute_residual
+
+  !> Compute WRMS norm for a residual vector using CVODE-style weights.
+  function PTCSolver_compute_wrms_norm(self, x, rvec) result(wrms_norm)
+    class(PTCSolver), intent(in) :: self  !! Solver object providing WRMS weighting parameters.
+    real(wp), intent(in) :: x(:)  !! Current state vector.
+    real(wp), intent(in) :: rvec(:)  !! Residual vector.
+    real(wp) :: wrms_norm  !! Weighted root-mean-square norm.
+
+    real(wp) :: scale(size(x))
+
+    scale = self%weighted_atol + self%weighted_rtol * abs(x)
+    wrms_norm = sqrt(sum((rvec / scale) ** 2) / real(size(x), wp))
+  end function PTCSolver_compute_wrms_norm
 
   !> Perform one linearized pseudo-transient correction solve and state update.
   !!
@@ -525,9 +579,12 @@ contains
     if (allocated(self%jac_mat)) deallocate(self%jac_mat)
     if (allocated(self%a_dense)) deallocate(self%a_dense)
     if (allocated(self%a_band)) deallocate(self%a_band)
+    if (allocated(self%weighted_atol)) deallocate(self%weighted_atol)
     if (allocated(self%ipiv)) deallocate(self%ipiv)
 
     self%initialized = .false.
+    self%use_weighted_norm = .false.
+    self%weighted_rtol = 0.0_wp
     self%f => null()
     self%jac => null()
     self%verify => null()
