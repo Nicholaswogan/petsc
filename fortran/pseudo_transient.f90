@@ -21,36 +21,41 @@ module pseudo_transient
     subroutine rhs_fcn(u, udot, ierr)
       import :: wp
       implicit none
-      real(wp), intent(in) :: u(:)
-      real(wp), intent(out) :: udot(:)
-      integer, intent(out) :: ierr
+      real(wp), intent(in) :: u(:)  !! Input state vector.
+      real(wp), intent(out) :: udot(:)  !! Residual/right-hand-side vector `f(u)`.
+      integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine rhs_fcn
 
     subroutine jac_fcn(u, jac, ierr)
       import :: wp
       implicit none
-      real(wp), intent(in) :: u(:)
-      real(wp), intent(out) :: jac(:, :)
-      integer, intent(out) :: ierr
+      real(wp), intent(in) :: u(:)  !! Input state vector.
+      real(wp), intent(out) :: jac(:, :)  !! Jacobian in configured dense or compact-banded layout.
+      integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine jac_fcn
 
     subroutine verify_step_fcn(x_new, dt, accept, ierr)
       import :: wp
       implicit none
-      real(wp), intent(in) :: x_new(:)
-      real(wp), intent(inout) :: dt
-      logical, intent(out) :: accept
-      integer, intent(out) :: ierr
+      real(wp), intent(in) :: x_new(:)  !! Candidate updated state.
+      real(wp), intent(inout) :: dt  !! Proposed timestep (may be modified by callback).
+      logical, intent(out) :: accept  !! Set true to accept candidate step.
+      integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine verify_step_fcn
 
     subroutine timestep_fcn(fnorm, fnorm_initial, fnorm_previous, dt, dt_initial, dt_increment, increment_from_initial_dt, dt_max, new_dt, ierr)
       import :: wp
       implicit none
-      real(wp), intent(in) :: fnorm, fnorm_initial, fnorm_previous
-      real(wp), intent(in) :: dt, dt_initial, dt_increment, dt_max
-      logical, intent(in) :: increment_from_initial_dt
-      real(wp), intent(out) :: new_dt
-      integer, intent(out) :: ierr
+      real(wp), intent(in) :: fnorm  !! Current residual norm.
+      real(wp), intent(in) :: fnorm_initial  !! Residual norm from first accepted step.
+      real(wp), intent(in) :: fnorm_previous  !! Residual norm from previous accepted step.
+      real(wp), intent(in) :: dt  !! Current pseudo-time step.
+      real(wp), intent(in) :: dt_initial  !! Initial pseudo-time step.
+      real(wp), intent(in) :: dt_increment  !! Timestep growth factor.
+      logical, intent(in) :: increment_from_initial_dt  !! Select initial-reference vs previous-step adaptation formula.
+      real(wp), intent(in) :: dt_max  !! Maximum allowed timestep (non-positive means no cap).
+      real(wp), intent(out) :: new_dt  !! Computed timestep for the next accepted step.
+      integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine timestep_fcn
   end interface
 
@@ -58,71 +63,79 @@ module pseudo_transient
     subroutine dgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
       import :: wp
       implicit none
-      integer, intent(in) :: n, nrhs, lda, ldb
-      integer, intent(out) :: ipiv(*)
-      real(wp), intent(inout) :: a(lda, *)
-      real(wp), intent(inout) :: b(ldb, *)
-      integer, intent(out) :: info
+      integer, intent(in) :: n  !! System size.
+      integer, intent(in) :: nrhs  !! Number of right-hand sides.
+      integer, intent(in) :: lda  !! Leading dimension of `a`.
+      integer, intent(in) :: ldb  !! Leading dimension of `b`.
+      integer, intent(out) :: ipiv(*)  !! LAPACK pivot indices.
+      real(wp), intent(inout) :: a(lda, *)  !! Coefficient matrix (overwritten by LU factors).
+      real(wp), intent(inout) :: b(ldb, *)  !! Right-hand side(s), overwritten by solution(s).
+      integer, intent(out) :: info  !! LAPACK status code.
     end subroutine dgesv
 
     subroutine dgbsv(n, kl, ku, nrhs, ab, ldab, ipiv, b, ldb, info)
       import :: wp
       implicit none
-      integer, intent(in) :: n, kl, ku, nrhs, ldab, ldb
-      integer, intent(out) :: ipiv(*)
-      real(wp), intent(inout) :: ab(ldab, *)
-      real(wp), intent(inout) :: b(ldb, *)
-      integer, intent(out) :: info
+      integer, intent(in) :: n  !! System size.
+      integer, intent(in) :: kl  !! Number of sub-diagonals.
+      integer, intent(in) :: ku  !! Number of super-diagonals.
+      integer, intent(in) :: nrhs  !! Number of right-hand sides.
+      integer, intent(in) :: ldab  !! Leading dimension of `ab`.
+      integer, intent(in) :: ldb  !! Leading dimension of `b`.
+      integer, intent(out) :: ipiv(*)  !! LAPACK pivot indices.
+      real(wp), intent(inout) :: ab(ldab, *)  !! Banded coefficient matrix (overwritten by LU factors).
+      real(wp), intent(inout) :: b(ldb, *)  !! Right-hand side(s), overwritten by solution(s).
+      integer, intent(out) :: info  !! LAPACK status code.
     end subroutine dgbsv
   end interface
 
   type :: PTCSolver
-    integer :: neq = 0
-    integer :: jacobian_type = 0
-    integer :: kl = 0
-    integer :: ku = 0
-    integer :: ldab = 0
+    integer :: neq = 0  !! Number of unknowns in the state vector.
+    integer :: jacobian_type = 0  !! Jacobian mode (`PTC_JAC_DENSE` or `PTC_JAC_BAND`).
+    integer :: kl = 0  !! Number of sub-diagonals for banded Jacobians.
+    integer :: ku = 0  !! Number of super-diagonals for banded Jacobians.
+    integer :: ldab = 0  !! Leading dimension for LAPACK banded matrix storage.
 
-    procedure(rhs_fcn), pointer, nopass :: f => null()
-    procedure(jac_fcn), pointer, nopass :: jac => null()
-    procedure(verify_step_fcn), pointer, nopass :: verify => null()
-    procedure(timestep_fcn), pointer, nopass :: compute_dt => null()
+    procedure(rhs_fcn), pointer, nopass :: f => null()  !! User residual callback computing `f(x)`.
+    procedure(jac_fcn), pointer, nopass :: jac => null()  !! User Jacobian callback (dense or compact banded layout).
+    procedure(verify_step_fcn), pointer, nopass :: verify => null()  !! Optional step verification callback.
+    procedure(timestep_fcn), pointer, nopass :: compute_dt => null()  !! Optional timestep update callback.
 
-    real(wp) :: dt = 0.0_wp
-    real(wp) :: dt_initial = 0.0_wp
-    real(wp) :: dt_increment = 1.1_wp
-    real(wp) :: dt_max = 0.0_wp
-    logical :: increment_dt_from_initial_dt = .false.
+    real(wp) :: dt = 0.0_wp  !! Current pseudo-time step size.
+    real(wp) :: dt_initial = 0.0_wp  !! Initial pseudo-time step size.
+    real(wp) :: dt_increment = 1.1_wp  !! Growth factor used by default timestep adaptation.
+    real(wp) :: dt_max = 0.0_wp  !! Maximum pseudo-time step (`<=0` disables cap).
+    logical :: increment_dt_from_initial_dt = .false.  !! If true, adapt from initial `(dt, fnorm)` pair.
 
-    real(wp) :: fatol = 1.0e-50_wp
-    real(wp) :: frtol = 1.0e-12_wp
+    real(wp) :: fatol = 1.0e-50_wp  !! Absolute convergence tolerance on `||f(x)||_2`.
+    real(wp) :: frtol = 1.0e-12_wp  !! Relative convergence tolerance on `||f(x)||_2 / ||f(x0)||_2`.
 
-    real(wp) :: fnorm = -1.0_wp
-    real(wp) :: fnorm_initial = -1.0_wp
-    real(wp) :: fnorm_previous = -1.0_wp
+    real(wp) :: fnorm = -1.0_wp  !! Current residual norm `||f(x)||_2`.
+    real(wp) :: fnorm_initial = -1.0_wp  !! Residual norm at first accepted step.
+    real(wp) :: fnorm_previous = -1.0_wp  !! Residual norm from previous accepted step.
 
-    integer :: steps = 0
-    integer :: rejects_total = 0
-    integer :: max_reject = 10
-    integer :: max_steps = 10000
-    integer :: reason = PTC_REASON_NONE
+    integer :: steps = 0  !! Number of accepted pseudo-steps.
+    integer :: rejects_total = 0  !! Total number of rejected step attempts.
+    integer :: max_reject = 10  !! Maximum rejects allowed per `step()` before failure.
+    integer :: max_steps = 10000  !! Maximum accepted steps allowed in `solve()`.
+    integer :: reason = PTC_REASON_NONE  !! Solver state/reason code.
 
-    logical :: initialized = .false.
+    logical :: initialized = .false.  !! True once arrays and callbacks are configured.
 
-    real(wp), allocatable :: x(:)
-    real(wp), allocatable :: x_old(:)
-    real(wp), allocatable :: fvec(:)
-    real(wp), allocatable :: step_vec(:)
-    real(wp), allocatable :: rhs_mat(:, :)
+    real(wp), allocatable :: x(:)  !! Current solution iterate.
+    real(wp), allocatable :: x_old(:)  !! Backup iterate for rollback on rejected steps.
+    real(wp), allocatable :: fvec(:)  !! Residual workspace.
+    real(wp), allocatable :: step_vec(:)  !! Linear correction vector workspace.
+    real(wp), allocatable :: rhs_mat(:, :)  !! Right-hand-side workspace passed to LAPACK solvers.
 
-    real(wp), allocatable :: jac_mat(:, :)
-    real(wp), allocatable :: a_dense(:, :)
+    real(wp), allocatable :: jac_mat(:, :)  !! Jacobian workspace (dense or compact banded).
+    real(wp), allocatable :: a_dense(:, :)  !! Dense system matrix workspace for `(I/dt - J)`.
 
     ! Banded Jacobian compact storage (LAPACK standard):
     ! jac_mat(ku+1+i-j, j) = J(i,j), for max(1,j-ku) <= i <= min(n,j+kl)
-    real(wp), allocatable :: a_band(:, :)
+    real(wp), allocatable :: a_band(:, :)  !! Banded system matrix workspace for LAPACK `dgbsv`.
 
-    integer, allocatable :: ipiv(:)
+    integer, allocatable :: ipiv(:)  !! Pivot indices returned by LAPACK factorizations.
   contains
     procedure :: initialize => PTCSolver_initialize
     procedure :: step => PTCSolver_step
@@ -135,16 +148,26 @@ module pseudo_transient
 
 contains
 
+  !> Initialize solver state, allocate work arrays, and register user callbacks.
+  !!
+  !! Configures dense or banded Jacobian storage, sets PETSc-like defaults,
+  !! and optionally applies user-provided tolerances and stepping controls.
   subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps)
-    class(PTCSolver), intent(inout) :: self
-    real(wp), intent(in) :: x0(:)
-    procedure(rhs_fcn) :: f
-    integer, intent(in) :: jacobian_type
-    real(wp), intent(in) :: dt0
-    procedure(jac_fcn) :: jac
-    integer, intent(in), optional :: kl, ku, max_reject, max_steps
-    real(wp), intent(in), optional :: fatol, frtol, dt_increment, dt_max
-    logical, intent(in), optional :: increment_dt_from_initial_dt
+    class(PTCSolver), intent(inout) :: self  !! Solver object to initialize.
+    real(wp), intent(in) :: x0(:)  !! Initial state guess.
+    procedure(rhs_fcn) :: f  !! User residual callback.
+    integer, intent(in) :: jacobian_type  !! Jacobian mode (`PTC_JAC_DENSE` or `PTC_JAC_BAND`).
+    real(wp), intent(in) :: dt0  !! Initial pseudo-time step.
+    procedure(jac_fcn) :: jac  !! User Jacobian callback.
+    integer, intent(in), optional :: kl  !! Number of sub-diagonals for banded Jacobian mode.
+    integer, intent(in), optional :: ku  !! Number of super-diagonals for banded Jacobian mode.
+    integer, intent(in), optional :: max_reject  !! Maximum rejections allowed per `step()` call.
+    integer, intent(in), optional :: max_steps  !! Maximum accepted steps allowed in `solve()`.
+    real(wp), intent(in), optional :: fatol  !! Absolute residual-norm convergence tolerance.
+    real(wp), intent(in), optional :: frtol  !! Relative residual-norm convergence tolerance.
+    real(wp), intent(in), optional :: dt_increment  !! Default timestep growth factor.
+    real(wp), intent(in), optional :: dt_max  !! Maximum allowed timestep (non-positive means no cap).
+    logical, intent(in), optional :: increment_dt_from_initial_dt  !! Optional switch for initial-reference dt adaptation.
 
     call reset_storage(self)
 
@@ -206,22 +229,28 @@ contains
     self%initialized = .true.
   end subroutine PTCSolver_initialize
 
+  !> Register a callback to verify/possibly reject each candidate pseudo-step.
   subroutine PTCSolver_set_verify_timestep(self, verify)
-    class(PTCSolver), intent(inout) :: self
-    procedure(verify_step_fcn) :: verify
+    class(PTCSolver), intent(inout) :: self  !! Solver object to update.
+    procedure(verify_step_fcn) :: verify  !! User callback for accept/reject decisions.
 
     self%verify => verify
   end subroutine PTCSolver_set_verify_timestep
 
+  !> Register a callback that overrides default pseudo-time-step adaptation.
   subroutine PTCSolver_set_compute_timestep(self, compute_dt)
-    class(PTCSolver), intent(inout) :: self
-    procedure(timestep_fcn) :: compute_dt
+    class(PTCSolver), intent(inout) :: self  !! Solver object to update.
+    procedure(timestep_fcn) :: compute_dt  !! User callback for computing next timestep.
 
     self%compute_dt => compute_dt
   end subroutine PTCSolver_set_compute_timestep
 
+  !> Advance the solver by one accepted pseudo-step (with internal retries).
+  !!
+  !! Performs linearized PTC update, optional verify callback, default/custom
+  !! timestep adaptation, and convergence checks.
   subroutine PTCSolver_step(self)
-    class(PTCSolver), intent(inout) :: self
+    class(PTCSolver), intent(inout) :: self  !! Solver object advanced by one accepted pseudo-step.
 
     integer :: ierr, rejections
     real(wp) :: next_dt, reject_dt
@@ -312,22 +341,17 @@ contains
     end do
   end subroutine PTCSolver_step
 
-  subroutine PTCSolver_solve(self, max_steps)
-    class(PTCSolver), intent(inout) :: self
-    integer, intent(in), optional :: max_steps
-
-    integer :: step_limit
+  !> Repeatedly call `step()` until convergence or a terminal failure reason.
+  subroutine PTCSolver_solve(self)
+    class(PTCSolver), intent(inout) :: self  !! Solver object advanced until termination.
 
     if (.not. self%initialized) then
       self%reason = PTC_DIVERGED_NOT_INITIALIZED
       return
     end if
 
-    step_limit = self%max_steps
-    if (present(max_steps)) step_limit = max_steps
-
     do while (self%reason == PTC_REASON_NONE)
-      if (self%steps >= step_limit) then
+      if (self%steps >= self%max_steps) then
         self%reason = PTC_DIVERGED_MAX_STEPS
         exit
       end if
@@ -335,8 +359,9 @@ contains
     end do
   end subroutine PTCSolver_solve
 
+  !> Evaluate stopping criteria based on absolute and relative residual norms.
   subroutine PTCSolver_check_convergence(self)
-    class(PTCSolver), intent(inout) :: self
+    class(PTCSolver), intent(inout) :: self  !! Solver object whose residual norms are tested.
 
     if (self%fnorm < self%fatol) then
       self%reason = PTC_CONVERGED_PSEUDO_FATOL
@@ -353,12 +378,13 @@ contains
     self%reason = PTC_REASON_NONE
   end subroutine PTCSolver_check_convergence
 
+  !> Compute residual vector and its 2-norm at a given state.
   subroutine PTCSolver_compute_residual(self, x, fvec, fnorm, ierr)
-    class(PTCSolver), intent(inout) :: self
-    real(wp), intent(in) :: x(:)
-    real(wp), intent(out) :: fvec(:)
-    real(wp), intent(out) :: fnorm
-    integer, intent(out) :: ierr
+    class(PTCSolver), intent(inout) :: self  !! Solver object providing residual callback.
+    real(wp), intent(in) :: x(:)  !! State at which to evaluate residual.
+    real(wp), intent(out) :: fvec(:)  !! Residual vector `f(x)`.
+    real(wp), intent(out) :: fnorm  !! Euclidean norm of residual vector.
+    integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
 
     call self%f(x, fvec, ierr)
     if (ierr /= 0) then
@@ -369,9 +395,13 @@ contains
     fnorm = norm2(fvec)
   end subroutine PTCSolver_compute_residual
 
+  !> Perform one linearized pseudo-transient correction solve and state update.
+  !!
+  !! Solves `(I/dt - J) s = f(x)` using dense (`dgesv`) or banded (`dgbsv`)
+  !! LAPACK routines, then updates `x <- x + s`.
   subroutine PTCSolver_take_newton_update(self, ierr)
-    class(PTCSolver), intent(inout) :: self
-    integer, intent(out) :: ierr
+    class(PTCSolver), intent(inout) :: self  !! Solver object updated in place.
+    integer, intent(out) :: ierr  !! Status (`0` success, positive rejectable failure, negative fatal failure).
 
     integer :: info, i, j, row_compact, row_solve
     real(wp) :: inv_dt
@@ -436,10 +466,14 @@ contains
     end select
   end subroutine PTCSolver_take_newton_update
 
+  !> Compute the next pseudo-time step from residual norms.
+  !!
+  !! Uses either user callback `compute_dt` or the default TSPSEUDO-style
+  !! residual-ratio formula with optional cap `dt_max`.
   subroutine PTCSolver_compute_next_dt(self, next_dt, ierr)
-    class(PTCSolver), intent(inout) :: self
-    real(wp), intent(out) :: next_dt
-    integer, intent(out) :: ierr
+    class(PTCSolver), intent(inout) :: self  !! Solver object providing residual history and controls.
+    real(wp), intent(out) :: next_dt  !! Computed timestep for next accepted step.
+    integer, intent(out) :: ierr  !! Status (`0` success, nonzero failure).
 
     ierr = 0
 
@@ -463,10 +497,11 @@ contains
     end if
   end subroutine PTCSolver_compute_next_dt
 
+  !> Reject current attempt, rollback state, update `dt`, and count rejection.
   subroutine PTCSolver_reject_step(self, rejections, new_dt)
-    class(PTCSolver), intent(inout) :: self
-    integer, intent(inout) :: rejections
-    real(wp), intent(in) :: new_dt
+    class(PTCSolver), intent(inout) :: self  !! Solver object to rollback and update.
+    integer, intent(inout) :: rejections  !! Rejection counter for current `step()` call.
+    real(wp), intent(in) :: new_dt  !! Timestep to use after rejection.
 
     self%x = self%x_old
     self%dt = max(new_dt, tiny(1.0_wp))
@@ -478,8 +513,9 @@ contains
     end if
   end subroutine PTCSolver_reject_step
 
+  !> Deallocate solver work arrays and clear callback pointers.
   subroutine reset_storage(self)
-    class(PTCSolver), intent(inout) :: self
+    class(PTCSolver), intent(inout) :: self  !! Solver object whose allocations/pointers are cleared.
 
     if (allocated(self%x)) deallocate(self%x)
     if (allocated(self%x_old)) deallocate(self%x_old)
