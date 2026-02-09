@@ -1,0 +1,3 @@
+/Users/nicholas/Documents/Research_local/random/petsc/fortran/build/CMakeFiles/tspseudo.dir
+/Users/nicholas/Documents/Research_local/random/petsc/fortran/build/CMakeFiles/edit_cache.dir
+/Users/nicholas/Documents/Research_local/random/petsc/fortran/build/CMakeFiles/rebuild_cache.dir

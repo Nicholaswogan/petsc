@@ -1,0 +1,2 @@
+/usr/bin/ar qc libtspseudo.a CMakeFiles/tspseudo.dir/pseudo_transient.f90.o
+/usr/bin/ranlib libtspseudo.a
