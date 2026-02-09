@@ -42,11 +42,20 @@ contains
 
     type(PTCSolver) :: solver
     real(wp), parameter :: dt0 = 1.0e-8_wp
+    real(wp) :: relnorm
 
     call solver%initialize(y0, robertson_rhs, jacobian_type, dt0, robertson_jac, &
       kl=1, ku=2, max_steps=200000, dt_max=1.0e20_wp)
 
-    call solver%solve()
+    write (*, '(a,a)') 'Stepping case: ', trim(label)
+    write (*, '(a)') '  step                  dt            abs_norm            rel_norm'
+    do while (solver%reason == PTC_REASON_NONE)
+      call solver%step()
+      if (solver%steps > 0 .and. solver%fnorm_initial > 0.0_wp) then
+        relnorm = solver%fnorm / solver%fnorm_initial
+        write (*, '(2x,i6,3(2x,es18.10))') solver%steps, solver%dt, solver%fnorm, relnorm
+      end if
+    end do
 
     x_final = solver%x
     fnorm_final = solver%fnorm
