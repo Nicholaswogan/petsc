@@ -116,6 +116,8 @@ module pseudo_transient
     logical :: residual_valid = .false.  !! True when `fvec/fnorm` correspond to current `x`.
     real(wp) :: fnorm_old = -1.0_wp  !! Cached residual norm for rollback state `x_old`.
     logical :: residual_old_valid = .false.  !! True when `fvec_old/fnorm_old` correspond to `x_old`.
+    logical :: jac_valid = .false.  !! True when `jac_mat` corresponds to current `x`.
+    logical :: jac_old_valid = .false.  !! True when `jac_mat_old` corresponds to `x_old`.
 
     integer :: steps = 0  !! Number of accepted pseudo-steps.
     integer :: rejects_total = 0  !! Total number of rejected step attempts.
@@ -133,6 +135,7 @@ module pseudo_transient
     real(wp), allocatable :: rhs_mat(:, :)  !! Right-hand-side workspace passed to LAPACK solvers.
 
     real(wp), allocatable :: jac_mat(:, :)  !! Jacobian workspace (dense or compact banded).
+    real(wp), allocatable :: jac_mat_old(:, :)  !! Cached Jacobian for rollback state `x_old`.
     real(wp), allocatable :: a_dense(:, :)  !! Dense system matrix workspace for `(I/dt - J)`.
 
     ! Banded Jacobian compact storage (LAPACK standard):
@@ -203,6 +206,8 @@ contains
     self%residual_valid = .false.
     self%fnorm_old = -1.0_wp
     self%residual_old_valid = .false.
+    self%jac_valid = .false.
+    self%jac_old_valid = .false.
 
     allocate(self%x(self%neq), self%x_old(self%neq), self%fvec(self%neq), self%fvec_old(self%neq), self%step_vec(self%neq), self%rhs_mat(self%neq, 1), self%ipiv(self%neq))
     self%x = x0
@@ -212,7 +217,7 @@ contains
 
     select case (self%jacobian_type)
     case (PTC_JAC_DENSE)
-      allocate(self%jac_mat(self%neq, self%neq), self%a_dense(self%neq, self%neq))
+      allocate(self%jac_mat(self%neq, self%neq), self%jac_mat_old(self%neq, self%neq), self%a_dense(self%neq, self%neq))
 
     case (PTC_JAC_BAND)
       if (.not. present(kl) .or. .not. present(ku)) then
@@ -226,7 +231,7 @@ contains
       self%kl = kl
       self%ku = ku
       self%ldab = 2 * self%kl + self%ku + 1
-      allocate(self%jac_mat(self%kl + self%ku + 1, self%neq), self%a_band(self%ldab, self%neq))
+      allocate(self%jac_mat(self%kl + self%ku + 1, self%neq), self%jac_mat_old(self%kl + self%ku + 1, self%neq), self%a_band(self%ldab, self%neq))
 
     case default
       self%reason = PTC_DIVERGED_INVALID_INPUT
@@ -282,6 +287,12 @@ contains
         self%residual_old_valid = .true.
       else
         self%residual_old_valid = .false.
+      end if
+      if (self%jac_valid) then
+        self%jac_mat_old = self%jac_mat
+        self%jac_old_valid = .true.
+      else
+        self%jac_old_valid = .false.
       end if
       call PTCSolver_take_newton_update(self, ierr)
       if (ierr < 0) then
@@ -439,11 +450,14 @@ contains
 
     inv_dt = 1.0_wp / self%dt
 
-    select case (self%jacobian_type)
-    case (PTC_JAC_DENSE)
+    if (.not. self%jac_valid) then
       call self%jac(self%x, self%jac_mat, ierr)
       if (ierr /= 0) return
+      self%jac_valid = .true.
+    end if
 
+    select case (self%jacobian_type)
+    case (PTC_JAC_DENSE)
       self%a_dense = -self%jac_mat
       do i = 1, self%neq
         self%a_dense(i, i) = self%a_dense(i, i) + inv_dt
@@ -459,11 +473,9 @@ contains
       self%step_vec = self%rhs_mat(:, 1)
       self%x = self%x + self%step_vec
       self%residual_valid = .false.
+      self%jac_valid = .false.
 
     case (PTC_JAC_BAND)
-      call self%jac(self%x, self%jac_mat, ierr)
-      if (ierr /= 0) return
-
       self%a_band = 0.0_wp
       do j = 1, self%neq
         do i = max(1, j - self%ku), min(self%neq, j + self%kl)
@@ -484,6 +496,7 @@ contains
       self%step_vec = self%rhs_mat(:, 1)
       self%x = self%x + self%step_vec
       self%residual_valid = .false.
+      self%jac_valid = .false.
 
     case default
       ierr = -1
@@ -536,6 +549,12 @@ contains
     else
       self%residual_valid = .false.
     end if
+    if (self%jac_old_valid) then
+      self%jac_mat = self%jac_mat_old
+      self%jac_valid = .true.
+    else
+      self%jac_valid = .false.
+    end if
     self%rejects_total = self%rejects_total + 1
 
     rejections = rejections + 1
@@ -555,6 +574,7 @@ contains
     if (allocated(self%step_vec)) deallocate(self%step_vec)
     if (allocated(self%rhs_mat)) deallocate(self%rhs_mat)
     if (allocated(self%jac_mat)) deallocate(self%jac_mat)
+    if (allocated(self%jac_mat_old)) deallocate(self%jac_mat_old)
     if (allocated(self%a_dense)) deallocate(self%a_dense)
     if (allocated(self%a_band)) deallocate(self%a_band)
     if (allocated(self%ipiv)) deallocate(self%ipiv)
@@ -562,6 +582,8 @@ contains
     self%initialized = .false.
     self%residual_valid = .false.
     self%residual_old_valid = .false.
+    self%jac_valid = .false.
+    self%jac_old_valid = .false.
     self%f => null()
     self%jac => null()
     self%verify => null()
