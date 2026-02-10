@@ -85,17 +85,19 @@ module pseudo_transient
   end type PTCSolver
 
     abstract interface
-    subroutine rhs_fcn(u, udot, ierr)
-      import :: wp
+    subroutine rhs_fcn(solver, u, udot, ierr)
+      import :: PTCSolver, wp
       implicit none
+      class(PTCSolver), intent(in) :: solver  !! Solver object (`self`) passed for callback-side inspection.
       real(wp), intent(in) :: u(:)  !! Input state vector.
       real(wp), intent(out) :: udot(:)  !! Residual/right-hand-side vector `f(u)`.
       integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine rhs_fcn
 
-    subroutine jac_fcn(u, jac, ierr)
-      import :: wp
+    subroutine jac_fcn(solver, u, jac, ierr)
+      import :: PTCSolver, wp
       implicit none
+      class(PTCSolver), intent(in) :: solver  !! Solver object (`self`) passed for callback-side inspection.
       real(wp), intent(in) :: u(:)  !! Input state vector.
       real(wp), intent(out) :: jac(:, :)  !! Jacobian in configured dense or compact-banded layout.
       integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
@@ -274,7 +276,7 @@ contains
       self%dt = dt0
       self%dt_initial = dt0
     else
-      call self%jac(self%x, self%jac_mat, ierr)
+      call self%jac(self, self%x, self%jac_mat, ierr)
       if (ierr /= 0) then
         self%reason = PTC_DIVERGED_CALLBACK_FATAL
         return
@@ -505,7 +507,7 @@ contains
     real(wp), intent(out) :: fnorm  !! Euclidean norm of residual vector.
     integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
 
-    call self%f(x, fvec, ierr)
+    call self%f(self, x, fvec, ierr)
     if (ierr /= 0) then
       fnorm = -1.0_wp
       return
@@ -543,7 +545,7 @@ contains
     inv_dt = 1.0_wp / self%dt
 
     if (.not. self%jac_valid) then
-      call self%jac(self%x, self%jac_mat, ierr)
+      call self%jac(self, self%x, self%jac_mat, ierr)
       if (ierr /= 0) return
       self%jac_valid = .true.
     end if

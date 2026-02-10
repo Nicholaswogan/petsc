@@ -73,7 +73,8 @@ contains
     write (*, '(a,1x,es12.4)') '  sum(x)-1=', sum(x_final) - 1.0_wp
   end subroutine run_case
 
-  subroutine robertson_rhs(u, udot, ierr)
+  subroutine robertson_rhs(solver, u, udot, ierr)
+    class(PTCSolver), intent(in) :: solver
     real(wp), intent(in) :: u(:)
     real(wp), intent(out) :: udot(:)
     integer, intent(out) :: ierr
@@ -90,7 +91,8 @@ contains
     ierr = 0
   end subroutine robertson_rhs
 
-  subroutine robertson_jac(u, jac, ierr)
+  subroutine robertson_jac(solver, u, jac, ierr)
+    class(PTCSolver), intent(in) :: solver
     real(wp), intent(in) :: u(:)
     real(wp), intent(out) :: jac(:, :)
     integer, intent(out) :: ierr
