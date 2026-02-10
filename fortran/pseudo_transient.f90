@@ -101,6 +101,10 @@ module pseudo_transient
       integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine jac_fcn
 
+    !> Step verification callback timing/data contract.
+    !! Called after a candidate state update (`solver%x` is candidate `x_{n+1}`).
+    !! Residual (`solver%fvec/solver%fnorm`) is not guaranteed up-to-date for this `x`.
+    !! Jacobian (`solver%jac_mat`) is not guaranteed up-to-date for this `x`.
     subroutine verify_step_fcn(solver, accept, reject_dt, ierr)
       import :: PTCSolver, wp
       implicit none
@@ -110,6 +114,10 @@ module pseudo_transient
       integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine verify_step_fcn
 
+    !> Custom timestep callback timing/data contract.
+    !! Called after step acceptance and residual recomputation at current `solver%x`.
+    !! Residual (`solver%fvec/solver%fnorm`) is up-to-date for this `x`.
+    !! Jacobian (`solver%jac_mat`) is not guaranteed up-to-date for this `x`.
     subroutine timestep_fcn(solver, new_dt, ierr)
       import :: PTCSolver, wp
       implicit none
@@ -118,6 +126,10 @@ module pseudo_transient
       integer, intent(out) :: ierr  !! Callback status (`0` success, nonzero failure).
     end subroutine timestep_fcn
 
+    !> Custom convergence callback timing/data contract.
+    !! Called after step acceptance and residual recomputation at current `solver%x`.
+    !! Residual (`solver%fvec/solver%fnorm`) is up-to-date for this `x`.
+    !! Jacobian (`solver%jac_mat`) is not guaranteed up-to-date for this `x`.
     subroutine convergence_fcn(solver, converged, ierr)
       import PTCSolver
       implicit none
