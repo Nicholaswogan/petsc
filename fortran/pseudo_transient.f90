@@ -105,8 +105,6 @@ module pseudo_transient
     real(wp) :: dt_initial = 0.0_wp  !! Initial pseudo-time step size.
     real(wp) :: dt_increment = 1.1_wp  !! Growth factor used by default timestep adaptation.
     real(wp) :: dt_max = 0.0_wp  !! Maximum pseudo-time step (`<=0` disables cap).
-    real(wp) :: dt_grow_max = 2.0_wp  !! Maximum multiplicative increase allowed per accepted step.
-    real(wp) :: dt_shrink_min = 0.2_wp  !! Minimum multiplicative decrease allowed per accepted step.
     logical :: increment_dt_from_initial_dt = .false.  !! If true, adapt from initial `(dt, fnorm)` pair.
     logical :: enforce_positivity = .false.  !! If true, enforce nonnegative-state constraints during updates.
     real(wp), allocatable :: positivity_abs_floor(:)  !! Per-component absolute floor used in zero-equivalent negativity threshold.
@@ -164,7 +162,7 @@ contains
   !!
   !! Configures dense or banded Jacobian storage, sets PETSc-like defaults,
   !! and optionally applies user-provided tolerances and stepping controls.
-  subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, dt_grow_max, dt_shrink_min, increment_dt_from_initial_dt, max_reject, max_steps, weighted_rtol, weighted_atol, enforce_positivity, positivity_abs_floor, positivity_rel_floor, positivity_alpha_min, clip_tiny_negative_to_zero)
+  subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps, weighted_rtol, weighted_atol, enforce_positivity, positivity_abs_floor, positivity_rel_floor, positivity_alpha_min, clip_tiny_negative_to_zero)
     class(PTCSolver), intent(inout) :: self  !! Solver object to initialize.
     real(wp), intent(in) :: x0(:)  !! Initial state guess.
     procedure(rhs_fcn) :: f  !! User residual callback.
@@ -179,8 +177,6 @@ contains
     real(wp), intent(in), optional :: frtol  !! Relative residual-norm convergence tolerance.
     real(wp), intent(in), optional :: dt_increment  !! Default timestep growth factor.
     real(wp), intent(in), optional :: dt_max  !! Maximum allowed timestep (non-positive means no cap).
-    real(wp), intent(in), optional :: dt_grow_max  !! Maximum multiplicative timestep growth per accepted step.
-    real(wp), intent(in), optional :: dt_shrink_min  !! Minimum multiplicative timestep shrink per accepted step.
     logical, intent(in), optional :: increment_dt_from_initial_dt  !! Optional switch for initial-reference dt adaptation.
     real(wp), intent(in), optional :: weighted_rtol  !! Relative tolerance in WRMS weighting (`rtol` term).
     real(wp), intent(in), optional :: weighted_atol(:)  !! Per-component absolute tolerances in WRMS weighting.
@@ -207,16 +203,12 @@ contains
     self%f => f
 
     self%enforce_positivity = .false.
-    self%positivity_rel_floor = 0.0_wp
+    self%positivity_rel_floor = 1.0e-12_wp
     self%positivity_alpha_min = 1.0e-12_wp
     self%clip_tiny_negative_to_zero = .true.
-    self%dt_grow_max = 2.0_wp
-    self%dt_shrink_min = 0.2_wp
 
     if (present(dt_increment)) self%dt_increment = dt_increment
     if (present(dt_max)) self%dt_max = dt_max
-    if (present(dt_grow_max)) self%dt_grow_max = dt_grow_max
-    if (present(dt_shrink_min)) self%dt_shrink_min = dt_shrink_min
     if (present(fatol)) self%fatol = fatol
     if (present(frtol)) self%frtol = frtol
     if (present(increment_dt_from_initial_dt)) self%increment_dt_from_initial_dt = increment_dt_from_initial_dt
@@ -225,7 +217,7 @@ contains
     if (present(enforce_positivity)) self%enforce_positivity = enforce_positivity
     if (allocated(self%positivity_abs_floor)) deallocate(self%positivity_abs_floor)
     allocate(self%positivity_abs_floor(self%neq))
-    self%positivity_abs_floor = sqrt(tiny(1.0_wp))
+    self%positivity_abs_floor = 1.0e-14_wp
     if (present(clip_tiny_negative_to_zero)) self%clip_tiny_negative_to_zero = clip_tiny_negative_to_zero
     if (present(positivity_abs_floor)) then
       if (size(positivity_abs_floor) /= self%neq) then
@@ -237,10 +229,6 @@ contains
     if (present(positivity_rel_floor)) self%positivity_rel_floor = positivity_rel_floor
     if (present(positivity_alpha_min)) self%positivity_alpha_min = positivity_alpha_min
     if (any(self%positivity_abs_floor < 0.0_wp) .or. self%positivity_rel_floor < 0.0_wp .or. self%positivity_alpha_min <= 0.0_wp) then
-      self%reason = PTC_DIVERGED_INVALID_INPUT
-      return
-    end if
-    if (self%dt_grow_max < 1.0_wp .or. self%dt_shrink_min <= 0.0_wp .or. self%dt_shrink_min > 1.0_wp) then
       self%reason = PTC_DIVERGED_INVALID_INPUT
       return
     end if
@@ -649,11 +637,8 @@ contains
       else
         next_dt = self%dt_increment * self%dt * self%fnorm_previous / self%fnorm
       end if
+      if (self%dt_max > 0.0_wp) next_dt = min(next_dt, self%dt_max)
     end if
-
-    next_dt = min(next_dt, self%dt_grow_max * self%dt)
-    next_dt = max(next_dt, self%dt_shrink_min * self%dt)
-    if (self%dt_max > 0.0_wp) next_dt = min(next_dt, self%dt_max)
 
     if (next_dt <= 0.0_wp) then
       ierr = 1
@@ -696,10 +681,8 @@ contains
     self%initialized = .false.
     self%use_weighted_norm = .false.
     self%weighted_rtol = 0.0_wp
-    self%dt_grow_max = 2.0_wp
-    self%dt_shrink_min = 0.2_wp
     self%enforce_positivity = .false.
-    self%positivity_rel_floor = 0.0_wp
+    self%positivity_rel_floor = 1.0e-12_wp
     self%positivity_alpha_min = 1.0e-12_wp
     self%clip_tiny_negative_to_zero = .true.
     self%f => null()
