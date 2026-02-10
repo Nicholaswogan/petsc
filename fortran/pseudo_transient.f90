@@ -113,6 +113,9 @@ module pseudo_transient
     real(wp) :: fnorm = -1.0_wp  !! Current residual norm `||f(x)||_2`.
     real(wp) :: fnorm_initial = -1.0_wp  !! Residual norm at first accepted step.
     real(wp) :: fnorm_previous = -1.0_wp  !! Residual norm from previous accepted step.
+    logical :: residual_valid = .false.  !! True when `fvec/fnorm` correspond to current `x`.
+    real(wp) :: fnorm_old = -1.0_wp  !! Cached residual norm for rollback state `x_old`.
+    logical :: residual_old_valid = .false.  !! True when `fvec_old/fnorm_old` correspond to `x_old`.
 
     integer :: steps = 0  !! Number of accepted pseudo-steps.
     integer :: rejects_total = 0  !! Total number of rejected step attempts.
@@ -125,6 +128,7 @@ module pseudo_transient
     real(wp), allocatable :: x(:)  !! Current solution iterate.
     real(wp), allocatable :: x_old(:)  !! Backup iterate for rollback on rejected steps.
     real(wp), allocatable :: fvec(:)  !! Residual workspace.
+    real(wp), allocatable :: fvec_old(:)  !! Cached residual vector for rollback state `x_old`.
     real(wp), allocatable :: step_vec(:)  !! Linear correction vector workspace.
     real(wp), allocatable :: rhs_mat(:, :)  !! Right-hand-side workspace passed to LAPACK solvers.
 
@@ -196,8 +200,11 @@ contains
     self%fnorm = -1.0_wp
     self%fnorm_initial = -1.0_wp
     self%fnorm_previous = -1.0_wp
+    self%residual_valid = .false.
+    self%fnorm_old = -1.0_wp
+    self%residual_old_valid = .false.
 
-    allocate(self%x(self%neq), self%x_old(self%neq), self%fvec(self%neq), self%step_vec(self%neq), self%rhs_mat(self%neq, 1), self%ipiv(self%neq))
+    allocate(self%x(self%neq), self%x_old(self%neq), self%fvec(self%neq), self%fvec_old(self%neq), self%step_vec(self%neq), self%rhs_mat(self%neq, 1), self%ipiv(self%neq))
     self%x = x0
 
     self%jacobian_type = jacobian_type
@@ -269,6 +276,13 @@ contains
 
     do
       self%x_old = self%x
+      if (self%residual_valid) then
+        self%fvec_old = self%fvec
+        self%fnorm_old = self%fnorm
+        self%residual_old_valid = .true.
+      else
+        self%residual_old_valid = .false.
+      end if
       call PTCSolver_take_newton_update(self, ierr)
       if (ierr < 0) then
         self%reason = PTC_DIVERGED_CALLBACK_FATAL
@@ -305,6 +319,7 @@ contains
       if (ierr < 0) then
         self%reason = PTC_DIVERGED_CALLBACK_FATAL
         self%x = self%x_old
+        self%residual_valid = .false.
         return
       end if
       if (ierr > 0) then
@@ -313,6 +328,7 @@ contains
         if (self%reason /= PTC_REASON_NONE) return
         cycle
       end if
+      self%residual_valid = .true.
 
       if (self%fnorm_initial < 0.0_wp) then
         self%fnorm_initial = self%fnorm
@@ -412,8 +428,14 @@ contains
       return
     end if
 
-    call PTCSolver_compute_residual(self, self%x, self%fvec, self%fnorm, ierr)
-    if (ierr /= 0) return
+    if (.not. self%residual_valid) then
+      call PTCSolver_compute_residual(self, self%x, self%fvec, self%fnorm, ierr)
+      if (ierr /= 0) then
+        self%residual_valid = .false.
+        return
+      end if
+      self%residual_valid = .true.
+    end if
 
     inv_dt = 1.0_wp / self%dt
 
@@ -436,6 +458,7 @@ contains
 
       self%step_vec = self%rhs_mat(:, 1)
       self%x = self%x + self%step_vec
+      self%residual_valid = .false.
 
     case (PTC_JAC_BAND)
       call self%jac(self%x, self%jac_mat, ierr)
@@ -460,6 +483,7 @@ contains
 
       self%step_vec = self%rhs_mat(:, 1)
       self%x = self%x + self%step_vec
+      self%residual_valid = .false.
 
     case default
       ierr = -1
@@ -505,6 +529,13 @@ contains
 
     self%x = self%x_old
     self%dt = max(new_dt, tiny(1.0_wp))
+    if (self%residual_old_valid) then
+      self%fvec = self%fvec_old
+      self%fnorm = self%fnorm_old
+      self%residual_valid = .true.
+    else
+      self%residual_valid = .false.
+    end if
     self%rejects_total = self%rejects_total + 1
 
     rejections = rejections + 1
@@ -520,6 +551,7 @@ contains
     if (allocated(self%x)) deallocate(self%x)
     if (allocated(self%x_old)) deallocate(self%x_old)
     if (allocated(self%fvec)) deallocate(self%fvec)
+    if (allocated(self%fvec_old)) deallocate(self%fvec_old)
     if (allocated(self%step_vec)) deallocate(self%step_vec)
     if (allocated(self%rhs_mat)) deallocate(self%rhs_mat)
     if (allocated(self%jac_mat)) deallocate(self%jac_mat)
@@ -528,6 +560,8 @@ contains
     if (allocated(self%ipiv)) deallocate(self%ipiv)
 
     self%initialized = .false.
+    self%residual_valid = .false.
+    self%residual_old_valid = .false.
     self%f => null()
     self%jac => null()
     self%verify => null()
