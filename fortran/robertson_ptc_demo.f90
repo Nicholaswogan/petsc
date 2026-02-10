@@ -44,8 +44,8 @@ contains
     real(wp), parameter :: dt0 = 1.0e-8_wp
     real(wp) :: relnorm
 
-    call solver%initialize(y0, robertson_rhs, jacobian_type, dt0, robertson_jac, &
-      kl=1, ku=2, max_steps=200000, dt_max=1.0e20_wp)
+    call solver%initialize(y0, robertson_rhs, robertson_jac, jacobian_type, &
+      kl=1, ku=2, max_steps=1000)
 
     write (*, '(a,a)') 'Stepping case: ', trim(label)
     write (*, '(a)') '  step                  dt            abs_norm            rel_norm'

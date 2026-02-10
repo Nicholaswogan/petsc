@@ -176,13 +176,14 @@ contains
   !!
   !! Configures dense or banded Jacobian storage, sets PETSc-like defaults,
   !! and optionally applies user-provided tolerances and stepping controls.
-  subroutine PTCSolver_initialize(self, x0, f, jacobian_type, dt0, jac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps)
+  subroutine PTCSolver_initialize(self, x0, f, jac, jacobian_type, dt0, dt0_guess_fac, kl, ku, fatol, frtol, dt_increment, dt_max, increment_dt_from_initial_dt, max_reject, max_steps)
     class(PTCSolver), intent(inout) :: self  !! Solver object to initialize.
     real(wp), intent(in) :: x0(:)  !! Initial state guess.
     procedure(rhs_fcn) :: f  !! User residual callback.
-    integer, intent(in) :: jacobian_type  !! Jacobian mode (`PTC_JAC_DENSE` or `PTC_JAC_BAND`).
-    real(wp), intent(in) :: dt0  !! Initial pseudo-time step.
     procedure(jac_fcn) :: jac  !! User Jacobian callback.
+    integer, intent(in) :: jacobian_type  !! Jacobian mode (`PTC_JAC_DENSE` or `PTC_JAC_BAND`).
+    real(wp), intent(in), optional :: dt0  !! Initial pseudo-time step. If omitted, estimated from Jacobian diagonal.
+    real(wp), intent(in), optional :: dt0_guess_fac  !! Scale factor for auto `dt0` guess; used only when `dt0` is not provided.
     integer, intent(in), optional :: kl  !! Number of sub-diagonals for banded Jacobian mode.
     integer, intent(in), optional :: ku  !! Number of super-diagonals for banded Jacobian mode.
     integer, intent(in), optional :: max_reject  !! Maximum rejections allowed per `step()` call.
@@ -192,18 +193,32 @@ contains
     real(wp), intent(in), optional :: dt_increment  !! Default timestep growth factor.
     real(wp), intent(in), optional :: dt_max  !! Maximum allowed timestep (non-positive means no cap).
     logical, intent(in), optional :: increment_dt_from_initial_dt  !! Optional switch for initial-reference dt adaptation.
+    integer :: i, ierr
+    real(wp) :: maxdiag, dt0_guess_fac_
 
     call reset_storage(self)
 
     self%reason = PTC_REASON_NONE
-    if (size(x0) <= 0 .or. dt0 <= 0.0_wp) then
+    if (size(x0) <= 0) then
       self%reason = PTC_DIVERGED_INVALID_INPUT
       return
     end if
+    if (present(dt0)) then
+      if (dt0 <= 0.0_wp) then
+        self%reason = PTC_DIVERGED_INVALID_INPUT
+        return
+      end if
+    end if
+    if (present(dt0_guess_fac)) then
+      if (dt0_guess_fac <= 0.0_wp) then
+        self%reason = PTC_DIVERGED_INVALID_INPUT
+        return
+      end if
+    end if
 
     self%neq = size(x0)
-    self%dt = dt0
-    self%dt_initial = dt0
+    self%dt = 0.0_wp
+    self%dt_initial = 0.0_wp
     self%steps = 0
     self%rejects_total = 0
 
@@ -254,6 +269,36 @@ contains
       self%reason = PTC_DIVERGED_INVALID_INPUT
       return
     end select
+
+    if (present(dt0)) then
+      self%dt = dt0
+      self%dt_initial = dt0
+    else
+      call self%jac(self%x, self%jac_mat, ierr)
+      if (ierr /= 0) then
+        self%reason = PTC_DIVERGED_CALLBACK_FATAL
+        return
+      end if
+
+      maxdiag = 0.0_wp
+      select case (self%jacobian_type)
+      case (PTC_JAC_DENSE)
+        do i = 1, self%neq
+          maxdiag = max(maxdiag, abs(self%jac_mat(i, i)))
+        end do
+      case (PTC_JAC_BAND)
+        do i = 1, self%neq
+          maxdiag = max(maxdiag, abs(self%jac_mat(self%ku + 1, i)))
+        end do
+      end select
+
+      dt0_guess_fac_ = 0.1_wp
+      if (present(dt0_guess_fac)) dt0_guess_fac_ = dt0_guess_fac
+
+      self%dt = min(dt0_guess_fac_ / max(maxdiag, tiny(1.0_wp)), 1.0e12_wp)
+      self%dt_initial = self%dt
+      self%jac_valid = .true.
+    end if
 
     self%initialized = .true.
   end subroutine PTCSolver_initialize
