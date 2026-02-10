@@ -42,21 +42,18 @@ contains
 
     type(PTCSolver) :: solver
     real(wp), parameter :: dt0 = 1.0e-8_wp
-    real(wp), parameter :: wrms_rtol = 1.0e-6_wp
-    real(wp), parameter :: wrms_atol(3) = [1.0e-12_wp, 1.0e-20_wp, 1.0e-12_wp]
     real(wp) :: relnorm
 
     call solver%initialize(y0, robertson_rhs, jacobian_type, dt0, robertson_jac, &
-      kl=1, ku=2, max_steps=200000, dt_max=1.0e20_wp, frtol=0.0_wp, &
-      weighted_rtol=wrms_rtol, weighted_atol=wrms_atol)
+      kl=1, ku=2, max_steps=200000, dt_max=1.0e20_wp)
 
     write (*, '(a,a)') 'Stepping case: ', trim(label)
-    write (*, '(a)') '  step                  dt             l2_norm           wrms_norm      rel_metric'
+    write (*, '(a)') '  step                  dt            abs_norm            rel_norm'
     do while (solver%reason == PTC_REASON_NONE)
       call solver%step()
       if (solver%steps > 0 .and. solver%fnorm_initial > 0.0_wp) then
         relnorm = solver%fnorm / solver%fnorm_initial
-        write (*, '(2x,i6,4(2x,es18.10))') solver%steps, solver%dt, solver%fnorm_l2, solver%fnorm_wrms, relnorm
+        write (*, '(2x,i6,3(2x,es18.10))') solver%steps, solver%dt, solver%fnorm, relnorm
       end if
     end do
 
@@ -71,9 +68,7 @@ contains
     write (*, '(a,1x,i0,1x,a)') '  reason  =', reason, trim(reason_name(reason))
     write (*, '(a,1x,i0)') '  steps   =', steps
     write (*, '(a,1x,i0)') '  rejects =', rejects
-    write (*, '(a,1x,es12.4)') '  metric  =', fnorm_final
-    write (*, '(a,1x,es12.4)') '  l2norm  =', solver%fnorm_l2
-    write (*, '(a,1x,es12.4)') '  wrms    =', solver%fnorm_wrms
+    write (*, '(a,1x,es12.4)') '  fnorm   =', fnorm_final
     write (*, '(a,1x,es12.4,1x,es12.4,1x,es12.4)') '  x       =', x_final(1), x_final(2), x_final(3)
     write (*, '(a,1x,es12.4)') '  sum(x)-1=', sum(x_final) - 1.0_wp
   end subroutine run_case
